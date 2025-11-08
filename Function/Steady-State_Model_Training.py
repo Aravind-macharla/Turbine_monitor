@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+
 """
 Steam Turbine - Steady State Detection Model Training
 """
