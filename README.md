@@ -1,4 +1,4 @@
-Turbine Efficiency Monitoring and Analysis
+Turbine Monitoring and Analysis
 📌 Project Overview
 
 This project is based on my internship at Kakatiya Thermal Power Plant (1×500 MW), Telangana State Power Generation Corporation Limited (TSGENCO). The work primarily focused on the study of turbines and their auxiliaries, along with efficiency calculations under different load conditions.
