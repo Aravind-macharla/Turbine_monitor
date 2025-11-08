@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Steam Turbine Condition Monitoring System
-Main Module
+Steam Turbine Condition Monitoring System - Main Module
 
-Available functions:
-- Real-time performance monitoring
-- Anomaly detection
-- Fault diagnosis
-
-@author: Your Name
+Real-time monitoring, anomaly detection, and fault diagnosis
 """
 
 import sys
-sys.path.append('path/to/monitoring_system') 
 import numpy as np
 import pandas as pd
 from sklearn.externals import joblib
@@ -22,333 +15,366 @@ from _function.anormal_detection import anomaly_detection
 from _function.fault_detection import feature_extraction
 
 # =============================================================================
-# Data Acquisition
+# CONFIGURATION
 # =============================================================================
-start_time = '2016-06-01 00:15:00'  # Input from main function: sys.argv[1]
-end_time = timecircle(start_time, 1)
+TURBINE_ID = 21  # Steam turbine unit ID
+INTERVAL_MINUTES = 1  # Data acquisition interval
 
-# Query operational data from database
-data = query_data(
-    "SELECT * FROM TB_ST_REAL_RUN WHERE TURID = 21 AND CYTIME BETWEEN '%s' AND '%s'" 
-    % (end_time, start_time)
+# =============================================================================
+# DATA ACQUISITION
+# =============================================================================
+start_time = '2016-06-01 00:15:00'  # Could be sys.argv[1] in production
+end_time = timecircle(start_time, INTERVAL_MINUTES)
+
+# Query real-time data from database
+query_sql = """
+    SELECT * FROM TB_ST_REAL_RUN 
+    WHERE TURID = %d 
+    AND CYTIME BETWEEN '%s' AND '%s'
+""" % (TURBINE_ID, end_time, start_time)
+
+data = query_data(query_sql)
+
+# =============================================================================
+# DATA ORGANIZATION
+# =============================================================================
+
+# Boundary conditions
+boundary = pd.DataFrame({
+    'Power': data['V122'],      # Steam turbine power (MW)
+    'T': data['V168'],          # Ambient temperature (°C)
+    'H': data['V167'],          # Ambient humidity (%)
+    'P': data['V169']           # Ambient pressure (Pa)
+})
+
+# HP Section parameters
+hp_params = pd.DataFrame({
+    'p_in': data['V125'],       # HP inlet pressure (MPa)
+    't_in': data['V126'],       # HP inlet temperature (°C)
+    'p_out': data['V127'],      # HP outlet pressure (MPa)
+    't_out': data['V128']       # HP outlet temperature (°C)
+})
+
+# IP Section parameters
+ip_params = pd.DataFrame({
+    'p_in': data['V129'],       # IP inlet pressure (MPa)
+    't_in': data['V130'],       # IP inlet temperature (°C)
+    'p_out': data['V131'],      # IP outlet pressure (MPa)
+    't_out': data['V132']       # IP outlet temperature (°C)
+})
+
+# LP Section parameters
+lp_params = pd.DataFrame({
+    'p_in': data['V133'],       # LP inlet pressure (MPa)
+    't_in': data['V134'],       # LP inlet temperature (°C)
+    't_out': data['V135'],      # LP outlet temperature (°C)
+    'vacuum': data['V136']      # Condenser vacuum (kPa)
+})
+
+# Condenser parameters
+condenser_params = pd.DataFrame({
+    'cw_t_in': data['V137'],    # Cooling water inlet temp (°C)
+    'cw_t_out': data['V138'],   # Cooling water outlet temp (°C)
+    'cw_flow': data['V139']     # Cooling water flow (kg/s)
+})
+
+# Steam flow parameters
+steam_flows = pd.DataFrame({
+    'main_flow': data['V106'],      # Main steam flow (kg/s)
+    'reheat_flow': data['V118']     # Reheat steam flow (kg/s)
+})
+
+# Heat rate
+heat_rate_data = data['V166']
+
+# =============================================================================
+# PERFORMANCE CALCULATION
+# =============================================================================
+
+st_power = boundary['Power'].iloc[-1]
+ambient_pressure = boundary['P'].iloc[-1] / 10000  # Convert to MPa
+
+# Create turbine section objects
+hp_section = pc.SteamTurbineSection(
+    p_in=hp_params['p_in'].iloc[-1],
+    t_in=hp_params['t_in'].iloc[-1],
+    p_out=hp_params['p_out'].iloc[-1],
+    t_out=hp_params['t_out'].iloc[-1],
+    m_steam=steam_flows['main_flow'].iloc[-1]
 )
 
-# =============================================================================
-# Data Classification and Organization
-# =============================================================================
+ip_section = pc.SteamTurbineSection(
+    p_in=ip_params['p_in'].iloc[-1],
+    t_in=ip_params['t_in'].iloc[-1],
+    p_out=ip_params['p_out'].iloc[-1],
+    t_out=ip_params['t_out'].iloc[-1],
+    m_steam=steam_flows['reheat_flow'].iloc[-1]
+)
 
-# Ambient and boundary conditions
-# Ambient humidity: V167, Ambient temperature: V168, Ambient pressure: V169
-# Steam turbine power output: V122
-boundary = pd.DataFrame({
-    'Power': data['V122'],
-    'T': data['V168'],
-    'H': data['V167'],
-    'P': data['V169']
-})
+lp_section = pc.SteamTurbineSection(
+    p_in=lp_params['p_in'].iloc[-1],
+    t_in=lp_params['t_in'].iloc[-1],
+    p_out=lp_params['vacuum'].iloc[-1] / 1000,  # Convert kPa to MPa
+    t_out=lp_params['t_out'].iloc[-1],
+    m_steam=steam_flows['reheat_flow'].iloc[-1] * 0.95  # Account for extraction
+)
 
-# High Pressure (HP) Turbine Section
-# HP inlet steam pressure: V125, HP inlet steam temperature: V126
-# HP exhaust pressure: V127, HP exhaust temperature: V128
-hp_turbine = pd.DataFrame({
-    'p_in': data['V125'],
-    't_in': data['V126'],
-    'p_out': data['V127'],
-    't_out': data['V128']
-})
+condenser = pc.Condenser(
+    vacuum=lp_params['vacuum'].iloc[-1],
+    t_exhaust=lp_params['t_out'].iloc[-1],
+    cw_t_in=condenser_params['cw_t_in'].iloc[-1],
+    cw_t_out=condenser_params['cw_t_out'].iloc[-1],
+    cw_flow=condenser_params['cw_flow'].iloc[-1]
+)
 
-# Intermediate Pressure (IP) Turbine Section
-# IP inlet steam pressure: V129, IP inlet steam temperature: V130
-# IP exhaust pressure: V131, IP exhaust temperature: V132
-ip_turbine = pd.DataFrame({
-    'p_in': data['V129'],
-    't_in': data['V130'],
-    'p_out': data['V131'],
-    't_out': data['V132']
-})
-
-# Low Pressure (LP) Turbine Section
-# LP inlet steam pressure: V133, LP inlet steam temperature: V134
-# LP exhaust temperature: V135, Condenser vacuum: V136
-lp_turbine = pd.DataFrame({
-    'p_in': data['V133'],
-    't_in': data['V134'],
-    't_out': data['V135'],
-    'vacuum': data['V136']
-})
-
-# Condenser and Cooling System
-# Cooling water inlet temperature: V137, Cooling water outlet temperature: V138
-# Cooling water flow rate: V139
-condenser = pd.DataFrame({
-    'cw_t_in': data['V137'],
-    'cw_t_out': data['V138'],
-    'cw_flow': data['V139']
-})
-
-# Steam Supply System (from HRSG or boiler)
-# Main steam flow: V106, Main steam temperature: V107, Main steam pressure: V108
-# Reheat steam flow: V118, Reheat steam temperature: V119, Reheat steam pressure: V120
-steam_supply = pd.DataFrame({
-    'main_flow': data['V106'],
-    'main_temp': data['V107'],
-    'main_press': data['V108'],
-    'reheat_flow': data['V118'],
-    'reheat_temp': data['V119'],
-    'reheat_press': data['V120']
-})
-
-# Feedwater System
-# Feedwater temperature: V121, Feedwater pressure: V140, Feedwater flow: V141
-feedwater = pd.DataFrame({
-    'fw_temp': data['V121'],
-    'fw_press': data['V140'],
-    'fw_flow': data['V141']
-})
-
-# Overall turbine heat rate
-heat_rate = data['V166']
-
-# =============================================================================
-# Data Preprocessing and Validation
-# =============================================================================
-# Add data validation and cleaning steps here as needed
-
-# =============================================================================
-# Performance Indicators Calculation
-# =============================================================================
-
-st_power = boundary['Power']
-ambient_pressure = boundary['P'] / 10000  # Convert to bar
-
-# HP Turbine Section
-hp_p_in = hp_turbine['p_in']
-hp_t_in = hp_turbine['t_in'] + 273.15  # Convert to Kelvin
-hp_p_out = hp_turbine['p_out']
-hp_t_out = hp_turbine['t_out'] + 273.15
-
-# IP Turbine Section
-ip_p_in = ip_turbine['p_in']
-ip_t_in = ip_turbine['t_in'] + 273.15
-ip_p_out = ip_turbine['p_out']
-ip_t_out = ip_turbine['t_out'] + 273.15
-
-# LP Turbine Section
-lp_p_in = lp_turbine['p_in']
-lp_t_in = lp_turbine['t_in'] + 273.15
-lp_t_out = lp_turbine['t_out'] + 273.15
-lp_vacuum = lp_turbine['vacuum']
-
-# Steam turbine performance calculations
+# Create complete turbine object
 steamturbine = pc.SteamTurbine(
-    st_power.iloc[-1],
-    hp_p_in.iloc[-1], hp_t_in.iloc[-1], hp_p_out.iloc[-1], hp_t_out.iloc[-1],
-    ip_p_in.iloc[-1], ip_t_in.iloc[-1], ip_p_out.iloc[-1], ip_t_out.iloc[-1],
-    lp_p_in.iloc[-1], lp_t_in.iloc[-1], lp_t_out.iloc[-1], lp_vacuum.iloc[-1],
-    steam_supply['main_flow'].iloc[-1], steam_supply['main_temp'].iloc[-1],
-    condenser['cw_t_in'].iloc[-1], condenser['cw_flow'].iloc[-1]
+    power=st_power,
+    hp_section=hp_section,
+    ip_section=ip_section,
+    lp_section=lp_section,
+    condenser=condenser,
+    m_main_steam=steam_flows['main_flow'].iloc[-1]
 )
 
 # Calculate performance indicators
-hp_efficiency = steamturbine.hp_section.isentropic_efficiency()
-hp_stage_efficiency = steamturbine.hp_section.stage_efficiency()
-hp_pressure_ratio = steamturbine.hp_section.pressure_ratio()
+hp_efficiency = hp_section.isentropic_efficiency()
+hp_pressure_ratio = hp_section.pressure_ratio()
 
-ip_efficiency = steamturbine.ip_section.isentropic_efficiency()
-ip_stage_efficiency = steamturbine.ip_section.stage_efficiency()
-ip_pressure_ratio = steamturbine.ip_section.pressure_ratio()
+ip_efficiency = ip_section.isentropic_efficiency()
+ip_pressure_ratio = ip_section.pressure_ratio()
 
-lp_efficiency = steamturbine.lp_section.isentropic_efficiency()
-lp_stage_efficiency = steamturbine.lp_section.stage_efficiency()
+lp_efficiency = lp_section.isentropic_efficiency()
+lp_pressure_ratio = lp_section.pressure_ratio()
 
 overall_efficiency = steamturbine.overall_efficiency()
 turbine_heat_rate = steamturbine.heat_rate()
-condenser_performance = steamturbine.condenser.performance_index()
+condenser_performance = condenser.performance_index()
 
-# Organize real values for monitoring
+# Organize calculated values
 st_real_value = pd.DataFrame({
-    'hp_p_in': hp_turbine['p_in'],
-    'hp_t_in': hp_turbine['t_in'],
-    'hp_p_out': hp_turbine['p_out'],
-    'hp_t_out': hp_turbine['t_out'],
-    'ip_p_in': ip_turbine['p_in'],
-    'ip_t_in': ip_turbine['t_in'],
-    'ip_p_out': ip_turbine['p_out'],
-    'ip_t_out': ip_turbine['t_out'],
-    'lp_p_in': lp_turbine['p_in'],
-    'lp_t_in': lp_turbine['t_in'],
-    'lp_t_out': lp_turbine['t_out'],
-    'lp_vacuum': lp_turbine['vacuum'],
+    # HP Section
+    'hp_p_in': hp_params['p_in'],
+    'hp_t_in': hp_params['t_in'],
+    'hp_p_out': hp_params['p_out'],
+    'hp_t_out': hp_params['t_out'],
     'hp_efficiency': hp_efficiency,
+    'hp_pressure_ratio': hp_pressure_ratio,
+    
+    # IP Section
+    'ip_p_in': ip_params['p_in'],
+    'ip_t_in': ip_params['t_in'],
+    'ip_p_out': ip_params['p_out'],
+    'ip_t_out': ip_params['t_out'],
     'ip_efficiency': ip_efficiency,
+    'ip_pressure_ratio': ip_pressure_ratio,
+    
+    # LP Section
+    'lp_p_in': lp_params['p_in'],
+    'lp_t_in': lp_params['t_in'],
+    'lp_t_out': lp_params['t_out'],
+    'lp_vacuum': lp_params['vacuum'],
     'lp_efficiency': lp_efficiency,
+    'lp_pressure_ratio': lp_pressure_ratio,
+    
+    # Overall
     'overall_efficiency': overall_efficiency,
     'heat_rate': turbine_heat_rate,
     'condenser_perf': condenser_performance
 })
 
 # =============================================================================
-# Load Reference Models (Baseline Performance Models)
+# LOAD BASELINE MODELS
 # =============================================================================
 
-# Define variables to monitor
 variables = [
-    'hp_p_in', 'hp_t_in', 'hp_p_out', 'hp_t_out',
-    'ip_p_in', 'ip_t_in', 'ip_p_out', 'ip_t_out',
-    'lp_p_in', 'lp_t_in', 'lp_t_out', 'lp_vacuum',
-    'hp_efficiency', 'ip_efficiency', 'lp_efficiency',
+    'hp_p_in', 'hp_t_in', 'hp_p_out', 'hp_t_out', 'hp_efficiency', 'hp_pressure_ratio',
+    'ip_p_in', 'ip_t_in', 'ip_p_out', 'ip_t_out', 'ip_efficiency', 'ip_pressure_ratio',
+    'lp_p_in', 'lp_t_in', 'lp_t_out', 'lp_vacuum', 'lp_efficiency', 'lp_pressure_ratio',
     'overall_efficiency', 'heat_rate', 'condenser_perf'
 ]
 
-# Initialize model dictionaries
 reference_model = {v: None for v in variables}
 std_model = {v: None for v in variables}
 
-# Load pre-trained models
+# Load pre-trained GLM models
 for v in variables:
-    reference_model[v] = joblib.load(
-        'path/to/models/ST_GLM_ref_{0}.pkl'.format(v)
-    )
-    std_model[v] = joblib.load(
-        'path/to/models/ST_GLM_std_{0}.pkl'.format(v)
-    )
+    try:
+        reference_model[v] = joblib.load(
+            f'model/ST_GLM_ref_{v}.pkl'
+        )
+        std_model[v] = joblib.load(
+            f'model/ST_GLM_std_{v}.pkl'
+        )
+    except FileNotFoundError:
+        print(f"Warning: Model for {v} not found. Skipping...")
+        continue
 
 # =============================================================================
-# Calculate Reference Values and Standard Deviations
+# CALCULATE REFERENCE VALUES
 # =============================================================================
 
 reference = {v: None for v in variables}
 std = {v: None for v in variables}
 
-# Predict reference values based on boundary conditions (Power, Temperature)
+boundary_input = np.array(boundary[['Power', 'T']].iloc[-1]).reshape(1, -1)
+
 for v in variables:
-    boundary_input = np.array(boundary[['Power', 'T']].iloc[-1]).reshape(1, -1)
-    reference[v] = reference_model[v].predict(boundary_input)
-    std[v] = std_model[v].predict(boundary_input)
+    if reference_model[v] is not None:
+        reference[v] = reference_model[v].predict(boundary_input)[0]
+        std[v] = std_model[v].predict(boundary_input)[0]
 
 # =============================================================================
-# Anomaly Detection (Based on 3-sigma rule)
+# ANOMALY DETECTION
 # =============================================================================
 
 lower_limit = {v: None for v in variables}
 upper_limit = {v: None for v in variables}
 indicator = {v: None for v in variables}
 
-# Calculate control limits and detect anomalies
 for v in variables:
-    lower_limit[v] = reference[v] - 3 * std[v]
-    upper_limit[v] = reference[v] + 3 * std[v]
-    indicator[v] = anomaly_detection(
-        st_real_value[v], st_power, lower_limit[v], upper_limit[v]
-    )
+    if reference[v] is not None and std[v] is not None:
+        lower_limit[v] = reference[v] - 3 * std[v]
+        upper_limit[v] = reference[v] + 3 * std[v]
+        
+        # Two-stage anomaly detection with steady-state check
+        indicator[v] = anomaly_detection(
+            variable=st_real_value[v],
+            power=boundary['Power'],
+            lower_limit=lower_limit[v],
+            upper_limit=upper_limit[v]
+        )
 
 # =============================================================================
-# Feature Extraction for Fault Diagnosis
+# FEATURE EXTRACTION
 # =============================================================================
 
 feature = feature_extraction(indicator)
 
 # =============================================================================
-# Fault Diagnosis
+# FAULT DIAGNOSIS
 # =============================================================================
 
-fault_model = joblib.load('path/to/models/ST_fault_model.pkl')
-fault = fault_model.predict(feature)
+fault_model = joblib.load('model/ST_fault_model.pkl')
+fault_probabilities = fault_model.predict(feature)
 
 # =============================================================================
-# Write Results to Database
+# DATABASE WRITING
 # =============================================================================
 
-# Performance Indicators
-# HP efficiency: V190, IP efficiency: V191, LP efficiency: V192
-# Overall efficiency: V193, Heat rate: V194, Condenser performance: V195
-sql_st_1 = """INSERT INTO TB_ST_REAL_RUN
-(ID, TURID, CYTIME, V190, V191, V192, V193, V194, V195)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time, hp_efficiency, ip_efficiency, lp_efficiency,
-    overall_efficiency, turbine_heat_rate, condenser_performance
+# 1. Write calculated performance indicators
+sql_st_performance = """
+INSERT INTO TB_ST_REAL_RUN
+(ID, TURID, CYTIME, 
+ V190, V191, V192, V193, V194, V195, V196, V197, V198, V199)
+VALUES (seq_st_common.nextval, %d, '%s',
+        %f, %f, %f, %f, %f, %f, %f, %f, %f, %f)
+""" % (
+    TURBINE_ID, start_time,
+    hp_efficiency, hp_pressure_ratio,
+    ip_efficiency, ip_pressure_ratio,
+    lp_efficiency, lp_pressure_ratio,
+    overall_efficiency, turbine_heat_rate, condenser_performance,
+    st_power
 )
-write_data(sql_st_1)
+write_data(sql_st_performance)
 
-# Reference Values
-sql_st_2_reference = """INSERT INTO TB_ST_REAL_REFERENCE
-(ID, TURID, CYTIME, V125, V126, V127, V128, V129, V130, V131, V132, 
-V133, V134, V135, V136, V190, V191, V192, V193, V194, V195)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f', 
-'%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time,
-    reference['hp_p_in'], reference['hp_t_in'], reference['hp_p_out'], reference['hp_t_out'],
-    reference['ip_p_in'], reference['ip_t_in'], reference['ip_p_out'], reference['ip_t_out'],
-    reference['lp_p_in'], reference['lp_t_in'], reference['lp_t_out'], reference['lp_vacuum'],
-    reference['hp_efficiency'], reference['ip_efficiency'], reference['lp_efficiency'],
-    reference['overall_efficiency'], reference['heat_rate'], reference['condenser_perf']
-)
-write_data(sql_st_2_reference)
-
-# Lower Limits
-sql_st_3_lower = """INSERT INTO TB_ST_REAL_REFERENCE_LOWER
+# 2. Write reference values
+reference_values = [reference[v] for v in variables if reference[v] is not None]
+sql_st_reference = """
+INSERT INTO TB_ST_REAL_REFERENCE
 (ID, TURID, CYTIME, V125, V126, V127, V128, V129, V130, V131, V132,
-V133, V134, V135, V136, V190, V191, V192, V193, V194, V195)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f',
-'%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time,
-    lower_limit['hp_p_in'], lower_limit['hp_t_in'], lower_limit['hp_p_out'], lower_limit['hp_t_out'],
-    lower_limit['ip_p_in'], lower_limit['ip_t_in'], lower_limit['ip_p_out'], lower_limit['ip_t_out'],
-    lower_limit['lp_p_in'], lower_limit['lp_t_in'], lower_limit['lp_t_out'], lower_limit['lp_vacuum'],
-    lower_limit['hp_efficiency'], lower_limit['ip_efficiency'], lower_limit['lp_efficiency'],
-    lower_limit['overall_efficiency'], lower_limit['heat_rate'], lower_limit['condenser_perf']
+ V133, V134, V135, V136, V190, V191, V192, V193, V194, V195, V196)
+VALUES (seq_st_common.nextval, %d, '%s', %s)
+""" % (
+    TURBINE_ID, start_time,
+    ', '.join([f"'{v}'" for v in reference_values])
 )
-write_data(sql_st_3_lower)
+write_data(sql_st_reference)
 
-# Upper Limits
-sql_st_4_upper = """INSERT INTO TB_ST_REAL_REFERENCE_UPPER
+# 3. Write lower control limits
+lower_values = [lower_limit[v] for v in variables if lower_limit[v] is not None]
+sql_st_lower = """
+INSERT INTO TB_ST_REAL_REFERENCE_LOWER
 (ID, TURID, CYTIME, V125, V126, V127, V128, V129, V130, V131, V132,
-V133, V134, V135, V136, V190, V191, V192, V193, V194, V195)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f',
-'%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time,
-    upper_limit['hp_p_in'], upper_limit['hp_t_in'], upper_limit['hp_p_out'], upper_limit['hp_t_out'],
-    upper_limit['ip_p_in'], upper_limit['ip_t_in'], upper_limit['ip_p_out'], upper_limit['ip_t_out'],
-    upper_limit['lp_p_in'], upper_limit['lp_t_in'], upper_limit['lp_t_out'], upper_limit['lp_vacuum'],
-    upper_limit['hp_efficiency'], upper_limit['ip_efficiency'], upper_limit['lp_efficiency'],
-    upper_limit['overall_efficiency'], upper_limit['heat_rate'], upper_limit['condenser_perf']
+ V133, V134, V135, V136, V190, V191, V192, V193, V194, V195, V196)
+VALUES (seq_st_common.nextval, %d, '%s', %s)
+""" % (
+    TURBINE_ID, start_time,
+    ', '.join([f"'{v}'" for v in lower_values])
 )
-write_data(sql_st_4_upper)
+write_data(sql_st_lower)
 
-# Anomaly Detection Results
-sql_st_5_anomaly = """INSERT INTO TB_ST_REAL_ANOMALY
+# 4. Write upper control limits
+upper_values = [upper_limit[v] for v in variables if upper_limit[v] is not None]
+sql_st_upper = """
+INSERT INTO TB_ST_REAL_REFERENCE_UPPER
 (ID, TURID, CYTIME, V125, V126, V127, V128, V129, V130, V131, V132,
-V133, V134, V135, V136, V190, V191, V192, V193, V194, V195)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f',
-'%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time,
-    indicator['hp_p_in'], indicator['hp_t_in'], indicator['hp_p_out'], indicator['hp_t_out'],
-    indicator['ip_p_in'], indicator['ip_t_in'], indicator['ip_p_out'], indicator['ip_t_out'],
-    indicator['lp_p_in'], indicator['lp_t_in'], indicator['lp_t_out'], indicator['lp_vacuum'],
-    indicator['hp_efficiency'], indicator['ip_efficiency'], indicator['lp_efficiency'],
-    indicator['overall_efficiency'], indicator['heat_rate'], indicator['condenser_perf']
+ V133, V134, V135, V136, V190, V191, V192, V193, V194, V195, V196)
+VALUES (seq_st_common.nextval, %d, '%s', %s)
+""" % (
+    TURBINE_ID, start_time,
+    ', '.join([f"'{v}'" for v in upper_values])
 )
-write_data(sql_st_5_anomaly)
+write_data(sql_st_upper)
 
-# Feature Extraction Results
-sql_st_6_features = """INSERT INTO TB_ST_REAL_AUTOFEATURE
+# 5. Write anomaly indicators
+indicator_values = [indicator[v] for v in variables if indicator[v] is not None]
+sql_st_anomaly = """
+INSERT INTO TB_ST_REAL_ANOMALY
+(ID, TURID, CYTIME, V125, V126, V127, V128, V129, V130, V131, V132,
+ V133, V134, V135, V136, V190, V191, V192, V193, V194, V195, V196)
+VALUES (seq_st_common.nextval, %d, '%s', %s)
+""" % (
+    TURBINE_ID, start_time,
+    ', '.join([f"'{v}'" for v in indicator_values])
+)
+write_data(sql_st_anomaly)
+
+# 6. Write extracted features
+sql_st_features = """
+INSERT INTO TB_ST_REAL_AUTOFEATURE
 (ID, TURID, CYTIME, V1, V2, V3, V4, V5, V6, V7)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time, feature['hp_eff'], feature['ip_eff'], feature['lp_eff'],
-    feature['pressure_drop'], feature['temp_drop'], feature['vacuum_dev'], feature['heat_rate_dev']
+VALUES (seq_st_common.nextval, %d, '%s',
+        %f, %f, %f, %f, %f, %f, %f)
+""" % (
+    TURBINE_ID, start_time,
+    feature['hp_eff'], feature['ip_eff'], feature['lp_eff'],
+    feature['pressure_drop'], feature['temp_drop'],
+    feature['vacuum_dev'], feature['heat_rate_dev']
 )
-write_data(sql_st_6_features)
+write_data(sql_st_features)
 
-# Fault Diagnosis Results
-# Fault types: HP Fouling (HF), IP Fouling (IF), LP Fouling (LF),
-# HP Blade Damage (HB), IP Blade Damage (IB), LP Blade Damage (LB),
-# Condenser Fouling (CF), Seal Leakage (SL), Bearing Issue (BI)
-sql_st_7_faults = """INSERT INTO TB_ST_REAL_AUTOFAULT
-(ID, TURID, CYTIME, V1, V2, V3, V4, V5, V6, V7, V8, V9)
-VALUES (seq_st_common.nextval, 21, '%s', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%f')""" % (
-    start_time, fault['HF'], fault['IF'], fault['LF'], fault['HB'],
-    fault['IB'], fault['LB'], fault['CF'], fault['SL'], fault['BI']
+# 7. Write fault diagnosis results
+sql_st_faults = """
+INSERT INTO TB_ST_REAL_AUTOFAULT
+(ID, TURID, CYTIME, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13)
+VALUES (seq_st_common.nextval, %d, '%s',
+        %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f, %f)
+""" % (
+    TURBINE_ID, start_time,
+    fault_probabilities['HF'], fault_probabilities['HC'], fault_probabilities['HS'],
+    fault_probabilities['IF'], fault_probabilities['IC'], fault_probabilities['IS'],
+    fault_probabilities['LF'], fault_probabilities['LC'], fault_probabilities['LS'],
+    fault_probabilities['CF'], fault_probabilities['CA'],
+    fault_probabilities['BI'], fault_probabilities['VB']
 )
-write_data(sql_st_7_faults)
+write_data(sql_st_faults)
 
-print("Steam turbine condition monitoring cycle completed successfully.")
+print(f"[{start_time}] Steam turbine monitoring cycle completed successfully.")
+
+# Print diagnostic summary if anomalies detected
+anomaly_count = sum(1 for v in indicator.values() if v == 1)
+if anomaly_count > 0:
+    print(f"⚠️  {anomaly_count} anomalies detected!")
+    for param, ind in indicator.items():
+        if ind == 1:
+            print(f"  - {param}: {st_real_value[param].iloc[-1]:.2f} "
+                  f"(expected: {reference[param]:.2f} ± {3*std[param]:.2f})")
+    
+    # Print most likely faults
+    print("\n🔍 Fault Diagnosis:")
+    fault_list = sorted(fault_probabilities.items(), key=lambda x: x[1], reverse=True)
+    for fault_name, prob in fault_list[:3]:
+        if prob > 0.3:
+            print(f"  - {fault_name}: {prob*100:.1f}% probability")
