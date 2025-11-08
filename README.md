@@ -18,6 +18,9 @@ Comparing turbine performance at different load levels (500 MW, 400 MW, 300 MW, 
 Note: The code shared in this repository is not the actual production version. Due to privacy and confidentiality reasons, I’m unable to share the original source code, because of privacy of data and code for KTPP company. However, the code provided here is a faithful and equally efficient representation of the real implementation, designed to demonstrate the same logic and performance characteristics.
 In addition to manual efficiency calculations, I developed a machine learning model to monitor the real-time efficiency of turbines.
 
+<img width="968" height="724" alt="image" src="https://github.com/user-attachments/assets/a2a56732-fb3c-4d7e-8db7-71f22b43985f" />
+
+
 Real-time operational data was directly collected from the plant’s computer system.
 
 The dataset included parameters such as steam pressure, temperature, enthalpy values, and turbine output.
